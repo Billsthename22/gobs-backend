@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.device import Device
+from app.services.device_status import get_device_status
 
 
 router = APIRouter(
@@ -48,7 +49,7 @@ def register_agent(
             device_id=existing_device.id,
             device_name=existing_device.device_name,
             hostname=existing_device.hostname,
-            status=existing_device.status,
+            status=get_device_status(existing_device.last_seen),
             websocket_url=f"/ws/devices/{existing_device.id}",
         )
 
@@ -69,6 +70,6 @@ def register_agent(
         device_id=device.id,
         device_name=device.device_name,
         hostname=device.hostname,
-        status=device.status,
+        status=get_device_status(device.last_seen),
         websocket_url=f"/ws/devices/{device.id}",
     )

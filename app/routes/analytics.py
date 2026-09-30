@@ -10,6 +10,7 @@ from app.models.alert import Alert
 from app.models.device import Device
 from app.models.employee import Employee
 from app.models.telemetry import DeviceTelemetry
+from app.services.device_status import ONLINE, get_device_status
 
 
 router = APIRouter(
@@ -214,10 +215,13 @@ def get_analytics_overview(
     # ---------------------------------------------------------
     total_devices = db.query(Device).count()
 
-    online_devices = (
-        db.query(Device)
-        .filter(Device.status == "online")
-        .count()
+    # Counted from `last_seen` so analytics agrees with the dashboard. The
+    # stored `status` column is never authoritative — see
+    # app.services.device_status.
+    online_devices = sum(
+        1
+        for device in db.query(Device).all()
+        if get_device_status(device.last_seen) == ONLINE
     )
 
     # ---------------------------------------------------------
@@ -381,10 +385,13 @@ def get_analytics_overview(
     # ---------------------------------------------------------
     total_devices = db.query(Device).count()
 
-    online_devices = (
-        db.query(Device)
-        .filter(Device.status == "online")
-        .count()
+    # Counted from `last_seen` so analytics agrees with the dashboard. The
+    # stored `status` column is never authoritative — see
+    # app.services.device_status.
+    online_devices = sum(
+        1
+        for device in db.query(Device).all()
+        if get_device_status(device.last_seen) == ONLINE
     )
 
     return {

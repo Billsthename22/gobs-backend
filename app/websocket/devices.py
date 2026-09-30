@@ -25,11 +25,24 @@ class DeviceConnectionManager:
     async def connect(self, device_id: int, websocket: WebSocket):
         self.connections[device_id] = websocket
 
-    def disconnect(self, device_id: int, websocket: WebSocket):
+    def disconnect(self, device_id: int, websocket: WebSocket) -> bool:
+        """Deregister `websocket`, reporting whether it was the live one.
+
+        Returns True only when this websocket was still the device's registered
+        connection. A reconnecting agent replaces the entry before the previous
+        handler unwinds, so the late handler gets False and must not act on the
+        device — otherwise its cleanup would mark a live device offline.
+        """
         current = self.connections.get(device_id)
 
         if current is websocket:
             self.connections.pop(device_id, None)
+            return True
+
+        return False
+
+    def is_connected(self, device_id: int) -> bool:
+        return device_id in self.connections
 
     async def send_json(self, device_id: int, message: dict) -> bool:
         websocket = self.connections.get(device_id)
@@ -116,7 +129,8 @@ async def device_websocket(
         websocket,
     )
 
-    device.status = "online"
+    # Only `last_seen` is recorded; status is derived from it when read, so
+    # there is no stored status to keep in sync here.
     device.last_seen = datetime.now(timezone.utc)
 
     active_offline_alert = (
@@ -258,7 +272,6 @@ async def device_websocket(
             # HEARTBEAT
             # ---------------------------------------------------------
             if message_type == "heartbeat":
-                device.status = "online"
                 device.last_seen = datetime.now(timezone.utc)
 
                 db.commit()
@@ -310,7 +323,6 @@ async def device_websocket(
                         and last_session_activity.description
                         == expected_description
                     ):
-                        device.status = "online"
                         device.last_seen = datetime.now(
                             timezone.utc
                         )
@@ -358,7 +370,6 @@ async def device_websocket(
 
                 db.add(activity)
 
-                device.status = "online"
                 device.last_seen = datetime.now(timezone.utc)
 
                 db.commit()
@@ -410,7 +421,6 @@ async def device_websocket(
                     and last_application_activity.description
                     == description
                 ):
-                    device.status = "online"
                     device.last_seen = datetime.now(timezone.utc)
 
                     db.commit()
@@ -435,7 +445,6 @@ async def device_websocket(
 
                 db.add(activity)
 
-                device.status = "online"
                 device.last_seen = datetime.now(timezone.utc)
 
                 db.commit()
@@ -499,7 +508,6 @@ async def device_websocket(
                 device.gps_latitude = latitude
                 device.gps_longitude = longitude
                 device.gps_updated_at = datetime.now(timezone.utc)
-                device.status = "online"
                 device.last_seen = datetime.now(timezone.utc)
 
                 db.commit()
@@ -550,7 +558,6 @@ async def device_websocket(
             device.cpu_usage = cpu_usage
             device.memory_usage = memory_usage
             device.storage_usage = storage_usage
-            device.status = "online"
             device.last_seen = datetime.now(timezone.utc)
 
             evaluate_metric_alert(
@@ -629,45 +636,58 @@ async def device_websocket(
                 )
 
     except WebSocketDisconnect:
-        device.status = "offline"
-        device.last_seen = datetime.now(timezone.utc)
+        # Deregister first: the result tells us whether this socket was still
+        # the device's live connection or had already been superseded by a
+        # reconnect. A superseded socket must not be treated as the device
+        # going offline — the agent is still connected on the newer socket.
+        was_current = device_manager.disconnect(device_id, websocket)
 
-        db.add(
-            Activity(
-                device_id=device_id,
-                employee_id=device.employee_id,
-                activity_type="DEVICE_DISCONNECTED",
-                description=f"{device.device_name} disconnected from GBOS",
-            )
-        )
-
-        active_offline_alert = (
-            db.query(Alert)
-            .filter(
-                Alert.device_id == device_id,
-                Alert.alert_type == "DEVICE_OFFLINE",
-                Alert.is_resolved == False,
-            )
-            .first()
-        )
-
-        if active_offline_alert is None:
+        if was_current:
+            # `last_seen` is deliberately left alone. It records when the
+            # backend last heard from the device, so back-dating it to "now"
+            # here would make a device that just went away look freshly seen
+            # and skew the derived status. The heartbeat that stopped arriving
+            # is what ages the device out.
             db.add(
-                Alert(
+                Activity(
                     device_id=device_id,
                     employee_id=device.employee_id,
-                    alert_type="DEVICE_OFFLINE",
-                    severity="critical",
-                    title="Device went offline",
+                    activity_type="DEVICE_DISCONNECTED",
                     description=(
-                        f"{device.device_name} disconnected from GBOS."
+                        f"{device.device_name} disconnected from GBOS"
                     ),
                 )
             )
 
-        db.commit()
+            active_offline_alert = (
+                db.query(Alert)
+                .filter(
+                    Alert.device_id == device_id,
+                    Alert.alert_type == "DEVICE_OFFLINE",
+                    Alert.is_resolved == False,
+                )
+                .first()
+            )
+
+            if active_offline_alert is None:
+                db.add(
+                    Alert(
+                        device_id=device_id,
+                        employee_id=device.employee_id,
+                        alert_type="DEVICE_OFFLINE",
+                        severity="critical",
+                        title="Device went offline",
+                        description=(
+                            f"{device.device_name} disconnected from GBOS."
+                        ),
+                    )
+                )
+
+            db.commit()
 
     finally:
+        # Idempotent: returns False if the `except` block above already
+        # deregistered this socket.
         device_manager.disconnect(
             device_id,
             websocket,

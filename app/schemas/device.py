@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
+
+from app.services.device_status import get_device_status
 
 
 class DeviceCreate(BaseModel):
@@ -64,7 +66,6 @@ class DeviceResponse(BaseModel):
     gps_longitude: Optional[float]
     gps_updated_at: Optional[datetime]
     employee_id: Optional[int]
-    status: str
     cpu_usage: float
     memory_usage: float
     storage_usage: float
@@ -73,3 +74,14 @@ class DeviceResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field
+    @property
+    def status(self) -> str:
+        """Device status, derived from `last_seen`.
+
+        This intentionally shadows the `devices.status` column: the column is
+        only ever written imperatively and goes stale, so every REST consumer
+        gets the derived value instead. See `app.services.device_status`.
+        """
+        return get_device_status(self.last_seen)
