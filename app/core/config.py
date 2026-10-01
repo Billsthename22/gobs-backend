@@ -1,9 +1,15 @@
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = (
+        "http://localhost:3000,"
+        "https://gbos-nine.vercel.app,"
+        "https://gbos-emioluwas-projects.vercel.app,"
+        "https://gbos-git-main-emioluwas-projects.vercel.app"
+    )
+
+    POWER_ADMIN_EMAILS: str = ""
 
     DATABASE_URL: str
 

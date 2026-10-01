@@ -1,11 +1,17 @@
+from typing import Optional
 
 from datetime import datetime, timezone
+import logging
+import asyncio
+import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.config import settings
+from app.services.power_commands import power_commands
 from app.models.activity import Activity
 from app.models.device import Device
 from app.models.remote_session import RemoteMonitoringSession
@@ -21,6 +27,82 @@ router = APIRouter(
     prefix="/remote-monitoring",
     tags=["Remote Monitoring"],
 )
+
+logger = logging.getLogger(__name__)
+
+
+def get_power_admin(user: User = Depends(get_current_user)) -> User:
+    # There is no role column in the existing user model; registration is public.
+    allowed = {email.strip() for email in settings.POWER_ADMIN_EMAILS.split(",") if email.strip()}
+    if user.email not in allowed:
+        raise HTTPException(status_code=403, detail="Power control requires an authorized administrator")
+    return user
+
+
+async def dispatch_power_command(*, device, command, db, current_user) -> dict:
+    if not device.is_active:
+        return {"device_id": device.id, "status": "inactive"}
+    socket = device_manager.connections.get(device.id)
+    if socket is None or not device_manager.is_connected(device.id):
+        return {"device_id": device.id, "status": "offline"}
+    record = power_commands.start(device.id, command, socket)
+    if record is None:
+        return {"device_id": device.id, "status": "busy"}
+    logger.info("[COMMAND] requested device=%s command=%s command_id=%s", device.id, command, record["command_id"])
+    try:
+        await asyncio.wait_for(socket.send_json({
+            "type": f"{command.upper()}_DEVICE",
+            "command_id": record["command_id"],
+            "expires_at": int(time.time()) + 15,
+        }), timeout=3)
+        if record["status"] == "pending":
+            record["status"] = "sent"
+    except Exception:
+        record.update(status="failed", detail="Agent connection failed; delivery is unconfirmed")
+        device_manager.disconnect(device.id, socket)
+    if record["status"] != "failed":
+        # Wait for the execution result, or return the last confirmed phase.
+        deadline = asyncio.get_running_loop().time() + 8
+        while record["status"] not in {"completed", "failed"}:
+            record["event"].clear()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(record["event"].wait(), remaining)
+            except asyncio.TimeoutError:
+                break
+        if record["status"] == "sent":
+            record["detail"] = "No agent acknowledgement; delivery is unconfirmed. Check agent version and connection."
+    db.add(Activity(device_id=device.id, employee_id=device.employee_id,
+                    activity_type=f"DEVICE_{command.upper()}_REQUESTED",
+                    description=f"{current_user.email} requested {command} (command_id={record['command_id']}); status={record['status']}"))
+    logger.info("[COMMAND] device=%s command_id=%s status=%s", device.id, record["command_id"], record["status"])
+    return power_commands.public(record)
+
+
+def individual_result(result):
+    status = result["status"]
+    if status in {"inactive", "offline", "busy", "failed"}:
+        raise HTTPException(status_code=409, detail=result.get("detail") or f"Device is {status}")
+    return {**result, "message": f"{result['command'].title()} command: {status}. "
+            + (result.get("detail") or "Physical power change is not verified.")}
+
+
+@router.get("/power/eligible")
+async def power_eligible(db: Session = Depends(get_db), current_user: User = Depends(get_power_admin)):
+    devices = db.query(Device).filter(Device.is_active == True).all()
+    connected = [d.id for d in devices if device_manager.is_connected(d.id)]
+    return {"device_ids": connected, "offline_count": len(devices) - len(connected)}
+
+
+@router.get("/power/commands/{command_id}")
+async def power_status(command_id: str, current_user: User = Depends(get_power_admin)):
+    power_commands.prune()
+    record = power_commands.records.get(command_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Command receipt expired or backend restarted; outcome unknown")
+    return power_commands.public(record)
 
 
 @router.post(
@@ -109,7 +191,7 @@ async def start_monitoring(
 
 
 @router.post(
-    "/{session_id}/stop",
+    "/{session_id:int}/stop",
     response_model=RemoteMonitoringResponse,
 )
 async def stop_monitoring(
@@ -156,7 +238,7 @@ async def stop_monitoring(
 async def restart_device(
     device_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_power_admin),
 ):
     device = (
         db.query(Device)
@@ -170,52 +252,18 @@ async def restart_device(
             detail="Device not found",
         )
 
-    if not device.is_active:
-        raise HTTPException(
-            status_code=409,
-            detail="Device is inactive",
-        )
-
-    device_connected = await device_manager.send_json(
-        device_id,
-        {
-            "type": "RESTART_DEVICE",
-        },
+    result = await dispatch_power_command(
+        device=device, command="restart", db=db, current_user=current_user
     )
-
-    if not device_connected:
-        raise HTTPException(
-            status_code=409,
-            detail="Device is not connected to GBOS",
-        )
-
-    db.add(
-        Activity(
-            device_id=device.id,
-            employee_id=device.employee_id,
-            activity_type="DEVICE_RESTART_REQUESTED",
-            description=(
-                f"{current_user.full_name} "
-                f"({current_user.email}) requested a restart "
-                f"for {device.device_name}"
-            ),
-        )
-    )
-
     db.commit()
-
-    return {
-        "success": True,
-        "message": f"Restart command sent to {device.device_name}",
-        "device_id": device.id,
-    }
+    return individual_result(result)
 
 
 @router.post("/device/{device_id}/shutdown")
 async def shutdown_device(
     device_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_power_admin),
 ):
     device = (
         db.query(Device)
@@ -229,42 +277,49 @@ async def shutdown_device(
             detail="Device not found",
         )
 
-    if not device.is_active:
-        raise HTTPException(
-            status_code=409,
-            detail="Device is inactive",
-        )
-
-    device_connected = await device_manager.send_json(
-        device_id,
-        {
-            "type": "SHUTDOWN_DEVICE",
-        },
+    result = await dispatch_power_command(
+        device=device, command="shutdown", db=db, current_user=current_user
     )
-
-    if not device_connected:
-        raise HTTPException(
-            status_code=409,
-            detail="Device is not connected to GBOS",
-        )
-
-    db.add(
-        Activity(
-            device_id=device.id,
-            employee_id=device.employee_id,
-            activity_type="DEVICE_SHUTDOWN_REQUESTED",
-            description=(
-                f"{current_user.full_name} "
-                f"({current_user.email}) requested a shutdown "
-                f"for {device.device_name}"
-            ),
-        )
-    )
-
     db.commit()
+    return individual_result(result)
 
-    return {
-        "success": True,
-        "message": f"Shutdown command sent to {device.device_name}",
-        "device_id": device.id,
-    }
+
+async def dispatch_power_command_to_all(
+    command: str,
+    db: Session,
+    current_user: User,
+    device_ids: Optional[list[int]] = None,
+) -> dict:
+    devices = db.query(Device).filter(Device.is_active == True).all()
+    if device_ids is not None:
+        selected_ids = set(device_ids)
+        devices = [device for device in devices if device.id in selected_ids]
+    # Sends run concurrently so one unresponsive device cannot block the fleet.
+    results = await asyncio.gather(*(dispatch_power_command(
+        device=device, command=command, db=db, current_user=current_user
+    ) for device in devices))
+    db.commit()
+    counts = {status: sum(r["status"] == status for r in results) for status in
+              ("offline", "busy", "sent", "acknowledged", "executing", "completed", "failed")}
+    return {"command": command, "results": results, "counts": counts,
+            "message": "; ".join(f"{count} {status}" for status, count in counts.items() if count)
+                       or "No eligible devices",
+            "note": "Completed means the native request was accepted (or dry-run); physical power change is unverified."}
+
+
+@router.post("/devices/restart")
+async def restart_all_devices(
+    device_ids: Optional[list[int]] = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_power_admin),
+):
+    return await dispatch_power_command_to_all("restart", db, current_user, device_ids)
+
+
+@router.post("/devices/shutdown")
+async def shutdown_all_devices(
+    device_ids: Optional[list[int]] = Body(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_power_admin),
+):
+    return await dispatch_power_command_to_all("shutdown", db, current_user, device_ids)

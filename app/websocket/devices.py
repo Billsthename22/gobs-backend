@@ -1,6 +1,8 @@
 
 from datetime import datetime, timezone
 import json
+import logging
+import time
 from typing import Dict
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -13,17 +15,21 @@ from app.models.device import Device
 from app.models.telemetry import DeviceTelemetry
 from app.models.remote_session import RemoteMonitoringSession
 from app.websocket.monitoring import monitoring_manager
+from app.services.power_commands import power_commands
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class DeviceConnectionManager:
     def __init__(self):
         self.connections: Dict[int, WebSocket] = {}
+        self.last_received: Dict[int, float] = {}
 
     async def connect(self, device_id: int, websocket: WebSocket):
         self.connections[device_id] = websocket
+        self.last_received[device_id] = time.monotonic()
 
     def disconnect(self, device_id: int, websocket: WebSocket) -> bool:
         """Deregister `websocket`, reporting whether it was the live one.
@@ -37,12 +43,14 @@ class DeviceConnectionManager:
 
         if current is websocket:
             self.connections.pop(device_id, None)
+            self.last_received.pop(device_id, None)
             return True
 
         return False
 
     def is_connected(self, device_id: int) -> bool:
-        return device_id in self.connections
+        return (device_id in self.connections
+                and time.monotonic() - self.last_received.get(device_id, 0) < 45)
 
     async def send_json(self, device_id: int, message: dict) -> bool:
         websocket = self.connections.get(device_id)
@@ -54,7 +62,7 @@ class DeviceConnectionManager:
             await websocket.send_json(message)
             return True
         except Exception:
-            self.connections.pop(device_id, None)
+            self.disconnect(device_id, websocket)
             return False
 
 
@@ -204,6 +212,9 @@ async def device_websocket(
     try:
         while True:
             message = await websocket.receive()
+            if self_socket := device_manager.connections.get(device_id):
+                if self_socket is websocket:
+                    device_manager.last_received[device_id] = time.monotonic()
 
             # Client disconnected (abrupt close, close frame, or an idle
             # websocket ping timeout). The raw `receive()` helper surfaces
@@ -267,6 +278,53 @@ async def device_websocket(
                 continue
 
             message_type = message.get("type", "telemetry")
+
+            # ---------------------------------------------------------
+            # POWER COMMAND LIFECYCLE
+            # ---------------------------------------------------------
+            if message_type == "command_status":
+                command_id = message.get("command_id")
+                command = message.get("command")
+                command_status = message.get("status")
+                detail = message.get("detail")
+
+                if (
+                    not isinstance(command_id, str)
+                    or command not in {"restart", "shutdown"}
+                    or command_status not in {
+                        "acknowledged", "executing", "completed", "failed"
+                    }
+                ):
+                    logger.warning(
+                        "[COMMAND] invalid status message device=%s", device_id
+                    )
+                    continue
+
+                if not power_commands.report(device_id, websocket, message):
+                    logger.warning("[COMMAND] uncorrelated status rejected device=%s", device_id)
+                    continue
+
+                logger.info(
+                    "[COMMAND] device=%s command=%s command_id=%s status=%s",
+                    device_id, command, command_id, command_status,
+                )
+                db.add(
+                    Activity(
+                        device_id=device_id,
+                        employee_id=device.employee_id,
+                        activity_type=(
+                            f"DEVICE_{command.upper()}_{command_status.upper()}"
+                        ),
+                        description=(
+                            f"Agent reported {command} command {command_status} "
+                            f"(command_id={command_id})"
+                            + (f": {detail}" if isinstance(detail, str) else "")
+                        ),
+                    )
+                )
+                device.last_seen = datetime.now(timezone.utc)
+                db.commit()
+                continue
 
             # ---------------------------------------------------------
             # HEARTBEAT
