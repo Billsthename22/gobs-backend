@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: gbos-backend
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: POWER_ADMIN_EMAILS
+        value: admin@example.com
+      - key: FRONTEND_URL
+        value: http://localhost:3000,https://gbos-nine.vercel.app,https://gbos-emioluwas-projects.vercel.app,https://gbos-git-main-emioluwas-projects.vercel.app
