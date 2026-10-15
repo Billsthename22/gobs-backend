@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.core.access import administrator_emails, require_admin, token_hash
 from app.core.auditing import AuditedRouter
 from app.core.database import get_db
@@ -45,7 +46,7 @@ async def invite(data: Invitation, db: Session = Depends(get_db)):
     grant.invitation_expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     db.commit()
     await monitoring_manager.close_all()
-    return {"email": email, "role": data.role, "invitation_token": invitation_token, "existing_account": db.query(User).filter(User.email == email).first() is not None}
+    return {"email": email, "role": data.role, "invitation_token": invitation_token, "existing_account": db.query(User).filter(func.lower(User.email) == email).first() is not None}
 
 
 @router.delete("/members/{email}", status_code=204)

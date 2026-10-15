@@ -102,3 +102,15 @@ def test_audit_records_allowed_and_denied_actions(workspace):
     assert any(x["actor_email"] == "operator@example.org" and x["result"] == "succeeded" for x in logs)
     assert any(x["actor_email"] == "viewer@example.org" and x["result"] == "denied" for x in logs)
     assert any(x["action"] == "power.restart" and x["result"] == "offline" for x in logs)
+
+
+def test_audit_storage_failure_prevents_mutations(workspace, monkeypatch):
+    _, headers, sessions = workspace
+    from app.core import auditing
+    def unavailable():
+        raise RuntimeError("Audit storage unavailable")
+    monkeypatch.setattr(auditing, "SessionLocal", unavailable)
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.patch("/devices/1", json={"device_name": "Must not change"}, headers=headers["operator"]).status_code == 500
+    with sessions() as db:
+        assert db.get(Device, 1).device_name == "Workstation"

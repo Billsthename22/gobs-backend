@@ -136,6 +136,9 @@ async def start_monitoring(
             detail="Device not found",
         )
 
+    if not device.is_active:
+        raise HTTPException(409, "Device is inactive")
+
     existing_session = (
         db.query(RemoteMonitoringSession)
         .filter(

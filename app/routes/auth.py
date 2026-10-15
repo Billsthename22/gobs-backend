@@ -2,6 +2,7 @@ from app.core.auditing import AuditedRouter
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.core.database import get_db
 from app.core.security import (
@@ -47,7 +48,7 @@ def register(
         raise HTTPException(422, "Password must be at least 12 characters and at most 72 UTF-8 bytes")
     existing_user = (
         db.query(User)
-        .filter(User.email == email)
+        .filter(func.lower(User.email) == email)
         .first()
     )
 
@@ -84,7 +85,7 @@ def login(
 ):
     user = (
         db.query(User)
-        .filter(User.email == str(user_data.email).lower())
+        .filter(func.lower(User.email) == str(user_data.email).lower())
         .first()
     )
 
