@@ -114,3 +114,27 @@ def test_audit_storage_failure_prevents_mutations(workspace, monkeypatch):
     assert client.patch("/devices/1", json={"device_name": "Must not change"}, headers=headers["operator"]).status_code == 500
     with sessions() as db:
         assert db.get(Device, 1).device_name == "Workstation"
+
+
+def test_authenticated_agent_records_app_switches_and_presence_transitions(workspace):
+    from app.models.activity import Activity
+    client, _, sessions = workspace
+    with client.websocket_connect("/ws/devices/1", headers={"Authorization": "Bearer device-secret"}) as ws:
+        assert ws.receive_json()["type"] == "connection"
+        assert ws.receive_json()["type"] == "GPS_COLLECTION"
+        assert ws.receive_json()["type"] == "START_SCREEN_STREAM"
+        for app in ["chrome.exe", "chrome.exe", "EXCEL.EXE"]:
+            ws.send_json({"type": "application_activity", "application": app})
+            assert ws.receive_json()["type"] == "application_activity_ack"
+        for state in ["active", "idle", "idle", "active"]:
+            ws.send_json({"type": "user_presence", "state": state})
+            assert ws.receive_json()["type"] == "user_presence_ack"
+        ws.send_json({"type": "user_presence", "state": "invalid"})
+        assert ws.receive_json()["type"] == "user_presence_error"
+    with sessions() as db:
+        apps = db.query(Activity).filter(Activity.activity_type == "APPLICATION_ACTIVE").order_by(Activity.id).all()
+        assert len(apps) == 2
+        assert "chrome.exe" in apps[0].description
+        assert "EXCEL.EXE" in apps[1].description
+        presence = db.query(Activity).filter(Activity.activity_type.in_(["USER_IDLE", "USER_ACTIVE"])).order_by(Activity.id).all()
+        assert [event.activity_type for event in presence] == ["USER_ACTIVE", "USER_IDLE", "USER_ACTIVE"]

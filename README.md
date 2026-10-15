@@ -79,6 +79,8 @@ Ensure `FRONTEND_URL` on Render includes the frontend's exact origin (for exampl
 
 ## Workspace access and audit history
 
+The Windows 0.1.2 agent also sends active-application executable names and active/idle transitions. These appear in Activity; select **Application** or **Presence** to filter them. Analytics counts application activity events, not exact usage duration. Idle is five minutes without input. Onboarding supplies employee notice, with collection details available through the laptop's GBOS tray icon. Live screen viewing has its own visible indicator.
+
 This installation is one company workspace. All members share its devices; it does not yet provide isolated organizations or per-device user assignments.
 
 - **Viewer:** read dashboards, devices, employees, activity, and alerts. Cannot change records, watch screen streams, or issue commands.

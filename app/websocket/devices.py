@@ -455,12 +455,31 @@ async def device_websocket(
                 continue
 
             # ---------------------------------------------------------
+            # ACTIVE / IDLE TRANSITIONS (never key contents)
+            # ---------------------------------------------------------
+            if message_type == "user_presence":
+                state = message.get("state")
+                if not isinstance(state, str) or state not in {"active", "idle"}:
+                    await websocket.send_json({"type": "user_presence_error", "error": "Invalid presence state"})
+                    continue
+                activity_type = "USER_IDLE" if state == "idle" else "USER_ACTIVE"
+                previous = (db.query(Activity).filter(Activity.device_id == device_id,
+                            Activity.activity_type.in_(["USER_IDLE", "USER_ACTIVE"]))
+                            .order_by(Activity.id.desc()).first())
+                if previous is None or previous.activity_type != activity_type:
+                    db.add(Activity(device_id=device_id, employee_id=device.employee_id,
+                                    activity_type=activity_type,
+                                    description=f"{device.device_name}: user is {state}"))
+                device.last_seen = datetime.now(timezone.utc)
+                db.commit()
+                await websocket.send_json({"type": "user_presence_ack", "state": state})
+                continue
+
             # APPLICATION ACTIVITY
             # ---------------------------------------------------------
             if message_type == "application_activity":
-                application = str(
-                    message.get("application", "")
-                ).strip()
+                application = message.get("application")
+                application = application.strip()[:120] if isinstance(application, str) else ""
 
                 if not application:
                     continue
