@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    ADMIN_EMAILS: str = ""
     FRONTEND_URL: str = (
         "http://localhost:3000,"
         "https://gbos-nine.vercel.app,"

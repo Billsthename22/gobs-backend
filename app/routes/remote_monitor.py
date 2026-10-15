@@ -1,3 +1,5 @@
+from app.core.access import require_access, require_admin
+from app.core.auditing import AuditedRouter
 from typing import Optional
 
 from datetime import datetime, timezone
@@ -13,6 +15,7 @@ from app.core.security import get_current_user
 from app.core.config import settings
 from app.services.power_commands import power_commands
 from app.models.activity import Activity
+from app.models.audit import AuditLog
 from app.models.device import Device
 from app.models.remote_session import RemoteMonitoringSession
 from app.models.user import User
@@ -23,7 +26,8 @@ from app.schemas.remote_monitor import (
 from app.websocket.devices import device_manager
 
 
-router = APIRouter(
+router = AuditedRouter(
+    dependencies=[Depends(require_access)],
     prefix="/remote-monitoring",
     tags=["Remote Monitoring"],
 )
@@ -31,8 +35,7 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 
-def get_power_admin(user: User = Depends(get_current_user)) -> User:
-    # There is no role column in the existing user model; registration is public.
+def get_power_admin(user: User = Depends(require_admin)) -> User:
     allowed = {email.strip() for email in settings.POWER_ADMIN_EMAILS.split(",") if email.strip()}
     if user.email not in allowed:
         raise HTTPException(status_code=403, detail="Power control requires an authorized administrator")
@@ -40,14 +43,20 @@ def get_power_admin(user: User = Depends(get_current_user)) -> User:
 
 
 async def dispatch_power_command(*, device, command, db, current_user) -> dict:
+    audit = AuditLog(actor_email=current_user.email, action=f"power.{command}", resource=f"device:{device.id}", result="attempted")
+    db.add(audit)
     if not device.is_active:
+        audit.result = "inactive"
         return {"device_id": device.id, "status": "inactive"}
     socket = device_manager.connections.get(device.id)
     if socket is None or not device_manager.is_connected(device.id):
+        audit.result = "offline"
         return {"device_id": device.id, "status": "offline"}
     record = power_commands.start(device.id, command, socket)
     if record is None:
+        audit.result = "busy"
         return {"device_id": device.id, "status": "busy"}
+    audit.command_id = record["command_id"]
     logger.info("[COMMAND] requested device=%s command=%s command_id=%s", device.id, command, record["command_id"])
     try:
         await asyncio.wait_for(socket.send_json({
@@ -78,6 +87,7 @@ async def dispatch_power_command(*, device, command, db, current_user) -> dict:
                     activity_type=f"DEVICE_{command.upper()}_REQUESTED",
                     description=f"{current_user.email} requested {command} (command_id={record['command_id']}); status={record['status']}"))
     logger.info("[COMMAND] device=%s command_id=%s status=%s", device.id, record["command_id"], record["status"])
+    audit.result = record["status"]
     return power_commands.public(record)
 
 
@@ -112,6 +122,7 @@ async def power_status(command_id: str, current_user: User = Depends(get_power_a
 async def start_monitoring(
     data: RemoteMonitoringStart,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_access),
 ):
     device = (
         db.query(Device)
@@ -197,6 +208,7 @@ async def start_monitoring(
 async def stop_monitoring(
     session_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_access),
 ):
     session = (
         db.query(RemoteMonitoringSession)
@@ -230,6 +242,9 @@ async def stop_monitoring(
             "session_id": session.id,
         },
     )
+
+    from app.websocket.monitoring import monitoring_manager
+    await monitoring_manager.close_session(session.id)
 
     return session
 

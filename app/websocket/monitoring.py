@@ -1,10 +1,15 @@
 from typing import Dict, Set
+import asyncio
+import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.remote_session import RemoteMonitoringSession
+from app.models.user import User
+from app.core.security import decode_access_token
+from app.core.access import workspace_role
 
 
 router = APIRouter()
@@ -13,6 +18,17 @@ router = APIRouter()
 class MonitoringConnectionManager:
     def __init__(self):
         self.connections: Dict[int, Set[WebSocket]] = {}
+
+    async def close_session(self, session_id):
+        for websocket in self.connections.pop(session_id, set()).copy():
+            try:
+                await websocket.close(code=1008)
+            except RuntimeError:
+                pass
+
+    async def close_all(self):
+        for session_id in list(self.connections):
+            await self.close_session(session_id)
 
     async def connect(
         self,
@@ -88,7 +104,27 @@ async def monitoring_websocket(
     websocket: WebSocket,
     session_id: int,
 ):
+    # Browsers send credentials in the first frame, never in a URL or log.
+    await websocket.accept()
+    try:
+        auth = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=10))
+        token = auth.get("token") if isinstance(auth, dict) else None
+        user_id = decode_access_token(token) if isinstance(token, str) else None
+    except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+        await websocket.close(code=1008)
+        return
     db: Session = SessionLocal()
+
+    def authorized():
+        db.expire_all()
+        user = db.get(User, user_id) if user_id else None
+        return bool(user and user.is_active and decode_access_token(token) == user.id
+                    and workspace_role(user.email, db) in {"admin", "operator"})
+
+    if not authorized():
+        await websocket.close(code=1008)
+        db.close()
+        return
 
     session = (
         db.query(RemoteMonitoringSession)
@@ -108,10 +144,7 @@ async def monitoring_websocket(
         db.close()
         return
 
-    await monitoring_manager.connect(
-        session_id,
-        websocket,
-    )
+    monitoring_manager.connections.setdefault(session_id, set()).add(websocket)
 
     await websocket.send_json(
         {
@@ -125,7 +158,15 @@ async def monitoring_websocket(
 
     try:
         while True:
-            await websocket.receive_text()
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=15)
+            except asyncio.TimeoutError:
+                pass
+            db.expire_all()
+            current_session = db.get(RemoteMonitoringSession, session_id)
+            if not authorized() or not current_session or current_session.status != "active":
+                await websocket.close(code=1008)
+                break
 
     except WebSocketDisconnect:
         monitoring_manager.disconnect(
@@ -134,4 +175,5 @@ async def monitoring_websocket(
         )
 
     finally:
+        monitoring_manager.disconnect(session_id, websocket)
         db.close()

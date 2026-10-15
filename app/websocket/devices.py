@@ -16,6 +16,8 @@ from app.models.telemetry import DeviceTelemetry
 from app.models.remote_session import RemoteMonitoringSession
 from app.websocket.monitoring import monitoring_manager
 from app.services.power_commands import power_commands
+from app.core.access import device_authenticated
+from app.models.audit import AuditLog
 
 
 router = APIRouter()
@@ -125,7 +127,9 @@ async def device_websocket(
         .first()
     )
 
-    if not device:
+    authorization = websocket.headers.get("authorization", "")
+    token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else None
+    if not device or not device.is_active or not device_authenticated(db, device_id, token):
         await websocket.close(code=1008)
         db.close()
         return
@@ -308,6 +312,8 @@ async def device_websocket(
                     "[COMMAND] device=%s command=%s command_id=%s status=%s",
                     device_id, command, command_id, command_status,
                 )
+                db.add(AuditLog(actor_email=f"device:{device_id}", action=f"power.{command}.{command_status}",
+                                resource=f"device:{device_id}", result=command_status, command_id=command_id))
                 db.add(
                     Activity(
                         device_id=device_id,

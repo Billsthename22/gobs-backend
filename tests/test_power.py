@@ -2,7 +2,8 @@
 import os
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["JWT_SECRET_KEY"] = "test-only-key"
-os.environ["POWER_ADMIN_EMAILS"] = "admin@example.test"
+os.environ["POWER_ADMIN_EMAILS"] = "admin@example.org"
+os.environ["ADMIN_EMAILS"] = "admin@example.org"
 
 import asyncio
 import time
@@ -39,6 +40,7 @@ class Endpoints(unittest.TestCase):
         device_manager.connections.clear()
         self.device = SimpleNamespace(id=1, is_active=True, employee_id=None)
         self.db = MagicMock()
+        self.db.get.return_value = None
         self.db.query.return_value.filter.return_value.first.return_value = self.device
         self.db.query.return_value.filter.return_value.all.return_value = [self.device]
         self.app = FastAPI()
@@ -46,15 +48,15 @@ class Endpoints(unittest.TestCase):
         self.app.dependency_overrides[get_db] = lambda: self.db
         self.client = TestClient(self.app)
 
-    def login(self, email="admin@example.test"):
+    def login(self, email="admin@example.org"):
         self.app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(email=email)
 
     def test_unauthorized_and_non_admin(self):
         for path in ("device/1/restart", "device/1/shutdown", "devices/restart", "devices/shutdown"):
             self.assertIn(self.client.post("/remote-monitoring/" + path).status_code, (401, 403))
-        self.login("ordinary@example.test")
+        self.login("ordinary@example.org")
         self.assertEqual(self.client.post("/remote-monitoring/devices/restart").status_code, 403)
-        self.login("ADMIN@example.test")
+        self.login("ADMIN@example.org")
         self.assertEqual(self.client.post("/remote-monitoring/devices/restart").status_code, 403)
 
     def test_individual_both_commands_and_receipts(self):
@@ -109,7 +111,7 @@ class Endpoints(unittest.TestCase):
             result.first.return_value = self.device if model is Device else None
             return result
         ws_db.query.side_effect = query
-        with patch("app.websocket.devices.SessionLocal", return_value=ws_db):
+        with patch("app.websocket.devices.SessionLocal", return_value=ws_db), patch("app.websocket.devices.device_authenticated", return_value=True):
             with TestClient(self.app) as client:
                 for command in ("restart", "shutdown"):
                     power_commands.records.clear()

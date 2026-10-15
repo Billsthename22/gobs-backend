@@ -1,3 +1,5 @@
+from app.core.access import require_access
+from app.core.auditing import AuditedRouter
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -13,7 +15,8 @@ from app.models.telemetry import DeviceTelemetry
 from app.services.device_status import ONLINE, get_device_status
 
 
-router = APIRouter(
+router = AuditedRouter(
+    dependencies=[Depends(require_access)],
     prefix="/analytics",
     tags=["Analytics"],
 )

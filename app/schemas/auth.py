@@ -9,6 +9,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     full_name: str
     password: str
+    invitation_token: Optional[str] = None
 
 
 class UserLogin(BaseModel):
@@ -17,6 +18,7 @@ class UserLogin(BaseModel):
 
 
 class UserResponse(BaseModel):
+    role: Optional[str] = None
     id: int
     email: EmailStr
     full_name: str

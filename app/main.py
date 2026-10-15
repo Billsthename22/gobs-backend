@@ -25,6 +25,10 @@ from app.websocket.devices import router as websocket_router
 from app.websocket.monitoring import router as monitoring_websocket_router
 
 
+from app.models.access import AccessGrant, DeviceCredential
+from app.models.audit import AuditLog
+from app.routes.access import router as access_router
+
 Base.metadata.create_all(bind=engine)
 
 
@@ -49,6 +53,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(access_router)
 app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(employees_router)

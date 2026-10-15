@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from app.core.auditing import AuditedRouter
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -11,9 +12,13 @@ from app.core.security import (
 )
 from app.models.user import User
 from app.schemas.auth import UserCreate, UserLogin, UserResponse, Token
+from app.core.access import require_member, token_hash, workspace_role
+from app.models.access import AccessGrant
+import secrets
+from datetime import datetime, timezone
 
 
-router = APIRouter(
+router = AuditedRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
@@ -28,11 +33,21 @@ security = HTTPBearer()
 )
 def register(
     user_data: UserCreate,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    email = str(user_data.email).lower()
+    grant = db.query(AccessGrant).filter(AccessGrant.email == email).with_for_update().first()
+    if (not grant or not grant.invitation_hash or not user_data.invitation_token
+            or not grant.invitation_expires_at
+            or grant.invitation_expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
+            or not secrets.compare_digest(grant.invitation_hash, token_hash(user_data.invitation_token))):
+        raise HTTPException(403, "A valid administrator invitation is required")
+    if len(user_data.password) < 12 or len(user_data.password.encode()) > 72:
+        raise HTTPException(422, "Password must be at least 12 characters and at most 72 UTF-8 bytes")
     existing_user = (
         db.query(User)
-        .filter(User.email == user_data.email)
+        .filter(User.email == email)
         .first()
     )
 
@@ -43,14 +58,17 @@ def register(
         )
 
     user = User(
-        email=user_data.email,
+        email=email,
         full_name=user_data.full_name,
         hashed_password=hash_password(user_data.password),
     )
 
     db.add(user)
+    grant.invitation_hash = None
+    grant.invitation_expires_at = None
     db.commit()
     db.refresh(user)
+    request.state.actor_email = user.email
 
     return user
 
@@ -61,11 +79,12 @@ def register(
 )
 def login(
     user_data: UserLogin,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     user = (
         db.query(User)
-        .filter(User.email == user_data.email)
+        .filter(User.email == str(user_data.email).lower())
         .first()
     )
 
@@ -84,6 +103,9 @@ def login(
             detail="User account is inactive",
         )
 
+    request.state.actor_email = user.email
+    if not workspace_role(user.email, db):
+        raise HTTPException(403, "You do not have access to this workspace")
     token = create_access_token(user.id)
 
     return {
@@ -96,28 +118,7 @@ def login(
     "/me",
     response_model=UserResponse,
 )
-def get_me(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
-):
-    user_id = decode_access_token(credentials.credentials)
-
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-
-    user = (
-        db.query(User)
-        .filter(User.id == user_id)
-        .first()
-    )
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    return user
+def get_me(request: Request, user: User = Depends(require_member), db: Session = Depends(get_db)):
+    data = UserResponse.model_validate(user).model_dump()
+    data["role"] = workspace_role(user.email, db)
+    return data

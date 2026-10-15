@@ -1,3 +1,5 @@
+from app.core.access import require_access
+from app.core.auditing import AuditedRouter
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,7 +16,8 @@ from app.schemas.alert import (
 )
 
 
-router = APIRouter(
+router = AuditedRouter(
+    dependencies=[Depends(require_access)],
     prefix="/alerts",
     tags=["Alerts"],
 )

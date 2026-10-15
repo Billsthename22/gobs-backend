@@ -1,3 +1,5 @@
+from app.core.access import require_access
+from app.core.auditing import AuditedRouter
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -11,7 +13,8 @@ from app.schemas.employee import (
 )
 
 
-router = APIRouter(
+router = AuditedRouter(
+    dependencies=[Depends(require_access)],
     prefix="/employees",
     tags=["Employees"],
 )

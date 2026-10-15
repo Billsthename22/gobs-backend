@@ -1,3 +1,5 @@
+from app.core.access import require_access
+from app.core.auditing import AuditedRouter
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,8 @@ from app.models.telemetry import DeviceTelemetry
 from app.services.device_status import get_device_status
 
 
-router = APIRouter(
+router = AuditedRouter(
+    dependencies=[Depends(require_access)],
     prefix="/dashboard",
     tags=["Dashboard"],
 )
