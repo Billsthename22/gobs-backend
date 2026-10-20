@@ -28,6 +28,8 @@ from app.websocket.monitoring import router as monitoring_websocket_router
 from app.models.access import AccessGrant, DeviceCredential
 from app.models.audit import AuditLog
 from app.routes.access import router as access_router
+from app.models.agent_update import AgentRelease, AgentState, AgentUpdate
+from app.routes.agent_updates import router as agent_updates_router, agent_router as agent_update_protocol_router
 
 Base.metadata.create_all(bind=engine)
 
@@ -54,6 +56,8 @@ app.add_middleware(
 )
 
 app.include_router(access_router)
+app.include_router(agent_updates_router)
+app.include_router(agent_update_protocol_router)
 app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(employees_router)

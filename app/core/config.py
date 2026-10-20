@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     )
 
     POWER_ADMIN_EMAILS: str = ""
+    AGENT_UPDATE_PUBLIC_KEY: str = ""
+    AGENT_UPDATE_DOWNLOAD_HOSTS: str = ""
 
     DATABASE_URL: str
 

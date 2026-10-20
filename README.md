@@ -1,3 +1,7 @@
+# Agent update management
+
+Admin-approved updates are available in the frontend Devices page. See [AGENT_UPDATES.md](AGENT_UPDATES.md) for signing-key setup, bootstrap installation, release publishing, recovery behavior, and validation.
+
 # GBOS backend
 
 The FastAPI backend for the GBOS device management platform. It handles authentication, devices, employees, activity, alerts, analytics, and remote monitoring. PostgreSQL stores the data; WebSockets connect devices and monitoring clients.
