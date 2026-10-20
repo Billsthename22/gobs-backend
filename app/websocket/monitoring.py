@@ -66,14 +66,19 @@ class MonitoringConnectionManager:
             .copy()
         )
 
-        for websocket in connections:
+        await asyncio.gather(*(self.send_bounded(session_id, websocket, message, False)
+                               for websocket in connections))
+
+    async def send_bounded(self, session_id, websocket, data, binary):
+        try:
+            send = websocket.send_bytes(data) if binary else websocket.send_json(data)
+            await asyncio.wait_for(send, timeout=2)
+        except Exception:
+            self.disconnect(session_id, websocket)
             try:
-                await websocket.send_json(message)
+                await asyncio.wait_for(websocket.close(code=1011), timeout=0.1)
             except Exception:
-                self.disconnect(
-                    session_id,
-                    websocket,
-                )
+                pass
 
     async def broadcast_bytes(
         self,
@@ -86,14 +91,8 @@ class MonitoringConnectionManager:
             .copy()
         )
 
-        for websocket in connections:
-            try:
-                await websocket.send_bytes(data)
-            except Exception:
-                self.disconnect(
-                    session_id,
-                    websocket,
-                )
+        await asyncio.gather(*(self.send_bounded(session_id, websocket, data, True)
+                               for websocket in connections))
 
 
 monitoring_manager = MonitoringConnectionManager()

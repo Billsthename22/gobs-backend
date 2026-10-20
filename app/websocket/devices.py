@@ -18,16 +18,27 @@ from app.websocket.monitoring import monitoring_manager
 from app.services.power_commands import power_commands
 from app.core.access import device_authenticated
 from app.models.audit import AuditLog
+from app.services.screen_sessions import ScreenSessionCache
 
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def load_screen_session_ids(device_id):
+    with SessionLocal() as db:
+        return [row[0] for row in db.query(RemoteMonitoringSession.id).filter(
+            RemoteMonitoringSession.device_id == device_id,
+            RemoteMonitoringSession.status == "active",
+            RemoteMonitoringSession.is_authorized == True,
+        ).all()]
+
+
 class DeviceConnectionManager:
     def __init__(self):
         self.connections: Dict[int, WebSocket] = {}
         self.last_received: Dict[int, float] = {}
+        self.screen_sessions = ScreenSessionCache(load_screen_session_ids)
 
     async def connect(self, device_id: int, websocket: WebSocket):
         self.connections[device_id] = websocket
@@ -235,36 +246,15 @@ async def device_websocket(
             if message.get("bytes") is not None:
                 screen_frame = message["bytes"]
 
-                active_sessions = (
-                    db.query(RemoteMonitoringSession)
-                    .filter(
-                        RemoteMonitoringSession.device_id == device_id,
-                        RemoteMonitoringSession.status == "active",
-                        RemoteMonitoringSession.is_authorized == True,
-                    )
-                    .all()
-                )
-
-                print(
-                    f"Received screen frame from device {device_id}: "
-                    f"{len(screen_frame)} bytes"
-                )
-
-                print(
-                    f"Active authorized monitoring sessions: "
-                    f"{len(active_sessions)}"
-                )
-
-                for session in active_sessions:
-                    print(
-                        f"Forwarding screen frame → "
-                        f"monitoring session {session.id}"
-                    )
-
-                    await monitoring_manager.broadcast_bytes(
-                        session.id,
-                        screen_frame,
-                    )
+                # A closed browser must not leave an orphan stream issuing
+                # database reads for every frame. Live viewers share a bounded
+                # authorization cache whose SQL runs outside the event loop.
+                if not monitoring_manager.connections:
+                    continue
+                session_ids = await device_manager.screen_sessions.active(device_id)
+                for session_id in session_ids:
+                    if monitoring_manager.connections.get(session_id):
+                        await monitoring_manager.broadcast_bytes(session_id, screen_frame)
 
                 continue
 

@@ -138,3 +138,20 @@ def test_authenticated_agent_records_app_switches_and_presence_transitions(works
         assert "EXCEL.EXE" in apps[1].description
         presence = db.query(Activity).filter(Activity.activity_type.in_(["USER_IDLE", "USER_ACTIVE"])).order_by(Activity.id).all()
         assert [event.activity_type for event in presence] == ["USER_ACTIVE", "USER_IDLE", "USER_ACTIVE"]
+
+
+def test_login_preflight_and_authentication_allow_the_production_origin(workspace):
+    client, _, _ = workspace
+    origin = "https://gbos-nine.vercel.app"
+    response = client.options("/auth/login", headers={
+        "Origin": origin, "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    })
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    response = client.post("/auth/login", headers={"Origin": origin}, json={
+        "email": "admin@example.org", "password": "long-test-password",
+    })
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "access_token" in response.json()

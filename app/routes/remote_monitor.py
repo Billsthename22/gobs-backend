@@ -151,6 +151,7 @@ async def start_monitoring(
     # If an active session already exists, make sure the
     # connected agent is told to start streaming again.
     if existing_session:
+        device_manager.screen_sessions.invalidate(device.id)
         device_connected = await device_manager.send_json(
             data.device_id,
             {
@@ -177,6 +178,7 @@ async def start_monitoring(
     db.add(session)
     db.commit()
     db.refresh(session)
+    device_manager.screen_sessions.invalidate(session.device_id)
 
     # Tell the connected device to begin screen streaming.
     device_connected = await device_manager.send_json(
@@ -236,6 +238,7 @@ async def stop_monitoring(
 
     db.commit()
     db.refresh(session)
+    device_manager.screen_sessions.invalidate(session.device_id)
 
     # Tell the connected device to stop screen streaming.
     await device_manager.send_json(

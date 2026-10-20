@@ -30,5 +30,6 @@ def isolated_database(monkeypatch):
     app.dependency_overrides.clear()
     devices.device_manager.connections.clear()
     devices.device_manager.last_received.clear()
+    devices.device_manager.screen_sessions.clear()
     monitoring.monitoring_manager.connections.clear()
     engine.dispose()
