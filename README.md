@@ -62,7 +62,7 @@ The file now reflects the free plan and pinned Python version. Administrator ema
 
 ## Connecting the frontend and agents
 
-The updated frontend and agent source default to Render. Frontend requests now share a single API helper that sends the signed-in user's bearer token. Frontend deployment settings can still override the default. Installed agents need updated binaries and per-device credentials; changing source code does not update an installed service.
+The updated frontend and agent source default to Render. Frontend requests share a single API helper that sends the signed-in user's bearer token. Frontend deployment settings can still override the default. Agent 0.1.5 and later enroll automatically after installation; changing source code does not update an installed service.
 
 To use this Render backend, set the frontend's build environment variable and redeploy the frontend:
 
@@ -70,11 +70,10 @@ To use this Render backend, set the frontend's build environment variable and re
 NEXT_PUBLIC_API_URL=https://gbos-backend.onrender.com
 ```
 
-Set the following in each agent's actual runtime/service environment, then restart the agent:
+Agents use this backend by default. Only deployments using another backend need to override the actual runtime/service environment and restart the agent:
 
 ```dotenv
 GBOS_API_URL=https://gbos-backend.onrender.com
-GBOS_DEVICE_TOKEN=replace-with-this-devices-credential
 ```
 
 For installed services, configure the service environment; an interactive shell variable may not reach the service. Both clients derive the WebSocket URL from the API URL, using `wss://` for HTTPS.
@@ -97,7 +96,9 @@ Administrators use **Settings → Workspace access and audit history** to invite
 
 Revoking membership blocks subsequent API calls even when the old login token has not expired. Role changes and revocations close monitoring viewer connections, which must authenticate again. Monitoring sockets also recheck membership and token expiry at least every 15 seconds. Stopping a monitoring session closes its viewer sockets.
 
-Administrators pre-enroll devices through Settings and issue individual credentials. Registration requires the matching hostname and credential; `/ws/devices/{id}` requires that device's credential in an Authorization header. See the adjacent agent README for installation and credential file paths. Credentials are shown once and can be rotated.
+Agent 0.1.5 and later enroll automatically at installation. Each agent creates and saves a random machine identity locally, then sends `auto_enroll: true` to `/agents/register` with that identity in its Authorization header. A new hostname creates a device and hashed identity atomically; an active precreated record without an identity can also be linked. Retrying the same identity reuses the record. Existing enrolled hostnames require their saved identity and cannot be claimed by a different token. Inactive devices remain blocked. Device WebSockets still authenticate with the saved identity. Normal installation needs no Settings or PowerShell steps.
+
+Older manually provisioned agents remain compatible. Advanced Settings retains device creation and credential recovery for administrators. Replacing a credential invalidates the old identity and requires provisioning the replacement on that machine. The standard installer preserves the saved identity on upgrades.
 
 Three additive tables are created at startup: `access_grants`, `device_credentials`, and `audit_logs`. Existing user and device tables are preserved. Write requests record an audit attempt before the handler runs, then their actor, HTTP result, action, and resource. If audit storage is unavailable, the request cannot proceed. An interrupted request can remain `attempted`; investigate before retrying a destructive action. Power requests and correlated agent reports also record command IDs and results. Audit rows have no device/user foreign keys, so deleting those records does not delete the audit trail. Passwords, tokens, and request bodies are excluded.
 
